@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         DC Participant Importer
 // @namespace    dc-ogol-fill
-// @version      1.0.5
+// @version      1.0.6
 // @author       DKode
 // @homepageURL  https://github.com/MrQev/dc-participant-importer.user.js
 // @supportURL   https://github.com/MrQev/dc-participant-importer.user.js/issues
 // @updateURL    https://raw.githubusercontent.com/MrQev/dc-participant-importer.user.js/main/dc-participant-importer.user.js
 // @downloadURL  https://raw.githubusercontent.com/MrQev/dc-participant-importer.user.js/main/dc-participant-importer.user.js
-// @description  Creates DC participants from Transfermarkt, oGol, worldfootball.net and EliteProspects, checks duplicates in DC and adds Google search to data-checking.
+// @description  Creates DC participants, checks duplicates in DC and adds Google search to data-checking.
 // @match        https://dc.livesport.eu/jsx/data/participant/detail/new*
 // @match        https://dc.livesport.eu/data/data-checking/participant-incident*
 // @match        https://www.ogol.com.br/jogador/*
