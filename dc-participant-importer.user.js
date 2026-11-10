@@ -1,19 +1,27 @@
 // ==UserScript==
 // @name         DC Participant Importer
 // @namespace    dc-ogol-fill
-// @version      1.0.6
+// @version      1.8.1
 // @author       DKode
 // @homepageURL  https://github.com/MrQev/dc-participant-importer.user.js
 // @supportURL   https://github.com/MrQev/dc-participant-importer.user.js/issues
 // @updateURL    https://raw.githubusercontent.com/MrQev/dc-participant-importer.user.js/main/dc-participant-importer.user.js
 // @downloadURL  https://raw.githubusercontent.com/MrQev/dc-participant-importer.user.js/main/dc-participant-importer.user.js
-// @description  Creates DC participants, checks duplicates in DC and adds Google search to data-checking.
+// @description  Creates DC participants from Transfermarkt, oGol, worldfootball.net, Soccerdonna, BeSoccer, UEFA.com, Sofascore, Opta (internal), EliteProspects and Baseball-Reference, checks duplicates in DC and adds Google search to data-checking.
 // @match        https://dc.livesport.eu/jsx/data/participant/detail/new*
 // @match        https://dc.livesport.eu/data/data-checking/participant-incident*
 // @match        https://www.ogol.com.br/jogador/*
 // @match        https://www.eliteprospects.com/player/*
 // @match        https://www.worldfootball.net/person/*
 // @match        https://www.worldfootball.net/player_summary/*
+// @match        https://www.uefa.com/*/players/*
+// @match        https://en.uefa.com/*/players/*
+// @match        https://www.sofascore.com/*player/*
+// @match        https://opta.lsoffice.cz/opta/opta-player-detail.php*
+// @match        https://opta-data.lsoffice.cz/opta/opta-player-detail.php*
+// @match        https://www.baseball-reference.com/players/*
+// @match        https://www.soccerdonna.de/*/profil/spieler_*
+// @match        https://www.besoccer.com/player/*
 // @match        https://www.transfermarkt.com/*/profil/spieler/*
 // @match        https://www.transfermarkt.de/*/profil/spieler/*
 // @match        https://www.transfermarkt.at/*/profil/spieler/*
@@ -73,6 +81,7 @@
 // @grant        GM_addValueChangeListener
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
+// @grant        GM_setClipboard
 // ==/UserScript==
 
 (function () {
@@ -84,6 +93,14 @@
   // "Create participant in DC" data older than this is not auto-filled
   // (e.g. the DC tab was closed before it loaded).
   const AUTO_RUN_MAX_AGE_MS = 2 * 60 * 1000;
+
+  // Sources often use 1 January when only the birth YEAR is known.
+  function isJan1(data) {
+    return !!(data && data.birthYear && data.birthDay === '01' && data.birthMonth === '01');
+  }
+  function jan1Message(data) {
+    return `⚠ Birth date is 1 January ${data.birthYear} — sources often use this when only the year is known. Please verify the date before saving.`;
+  }
 
   // Builds the DC participant-search URL: active participants (status 1)
   // whose name is _like "FirstName Surname". Diacritics are stripped because
@@ -209,6 +226,16 @@
     'bosnia & herzegovina': 'Bosnia and Herzegovina',
     "cote d'ivoire": 'Ivory Coast',
     'congo dr': 'DR Congo',
+    'côte d’ivoire': 'Ivory Coast',
+    "côte d'ivoire": 'Ivory Coast',
+    'congo - kinshasa': 'DR Congo',
+    'hongkong': 'Hong Kong',
+    'hong kong sar china': 'Hong Kong',
+    'hong kong, china': 'Hong Kong',
+    'macao sar china': 'Macao',
+    'macau': 'Macao',
+    'myanmar (burma)': 'Myanmar',
+    'congo - brazzaville': 'Congo',
   };
 
   function toDcCountry(name) {
@@ -304,6 +331,11 @@
       #dc-ogol-source-panel button:active { transform: scale(0.97); }
       #dc-ogol-source-panel button.create-btn { background: #0a7a3d; }
       #dc-ogol-source-panel button.create-btn:hover { background: #0e9a4d; }
+      #dc-ogol-source-panel .dc-date-warning {
+        display: none; max-width: 300px; padding: 8px 10px; border-radius: 8px;
+        background: #f5a623; color: #1a1a1a; font-size: 12px; font-weight: 600; line-height: 1.4;
+        box-shadow: 0 4px 16px rgba(0,0,0,.35);
+      }
       #dc-ogol-source-panel button.dup-btn { background: #1f5fa8; }
       #dc-ogol-source-panel button.dup-btn:hover { background: #2a74c8; }
     `);
@@ -378,6 +410,15 @@
     // onCapture may be sync (oGol) or async (Transfermarkt fetches the EN page).
     const doCapture = async () => {
       const data = await Promise.resolve(onCapture());
+      // Visible 1 January warning right under the buttons.
+      let warn = content.querySelector('.dc-date-warning');
+      if (!warn) {
+        warn = document.createElement('div');
+        warn.className = 'dc-date-warning';
+        content.insertBefore(warn, content.querySelector('#dc-ogol-name-split'));
+      }
+      warn.textContent = isJan1(data) ? jan1Message(data) : '';
+      warn.style.display = isJan1(data) ? 'block' : 'none';
       GM_setValue(STORAGE_KEY, JSON.stringify(data));
       console.log('[dc-ogol-fill] captured', data);
       return data;
@@ -457,6 +498,81 @@
 
   // Clickable chips under the panel buttons: click the word where the
   // surname starts. Every change re-captures.
+  // ---------------------------------------------------------------------
+  // DC naming rules (from the participant-creation manual)
+  // ---------------------------------------------------------------------
+  //  - Surname and First Name get ONE name each (short names on the web);
+  //    the complete name goes to Full Name ("Surnames FirstNames", DC order).
+  //  - ß -> ss, Þ/þ -> Th/th, Ð/ð -> D/d (all languages).
+  //  - Arabic names without hyphens: Al-Habsi -> Al Habsi.
+  //  - Russian/Ukrainian patronymics (-vich, -vic, -ovna, ...) only in Full Name.
+  //  - Asian players: Full Name is copied into Short Name (done on the DC form).
+  const ARAB_COUNTRIES = ['Algeria', 'Bahrain', 'Comoros', 'Djibouti', 'Egypt', 'Iraq', 'Jordan', 'Kuwait', 'Lebanon',
+    'Libya', 'Mauritania', 'Morocco', 'Oman', 'Palestine', 'Qatar', 'Saudi Arabia', 'Somalia', 'Sudan', 'Syria',
+    'Tunisia', 'United Arab Emirates', 'Yemen'];
+  const PATRONYMIC_COUNTRIES = ['Russia', 'Ukraine', 'Belarus', 'Kazakhstan', 'Kyrgyzstan', 'Tajikistan', 'Uzbekistan',
+    'Turkmenistan', 'Moldova', 'Armenia', 'Azerbaijan', 'Georgia'];
+  const ASIAN_COUNTRIES = ['South Korea', 'North Korea', 'Korea Republic', 'Japan', 'China', 'China PR', 'Taiwan',
+    'Chinese Taipei', 'Hong Kong', 'Macao', 'Mongolia', 'Vietnam', 'Thailand', 'Cambodia', 'Laos', 'Myanmar',
+    'Malaysia', 'Singapore', 'Indonesia', 'Philippines', 'Brunei', 'East Timor', 'Timor-Leste'];
+  // Spelling-tolerant: "Hongkong" / "Hong Kong" / "Hong Kong SAR China" all match.
+  const countryKey = (c) => (c || '').toLowerCase().replace(/\bsar\b.*$/, '').replace(/[^a-z]/g, '');
+  const ASIAN_KEYS = new Set(ASIAN_COUNTRIES.map(countryKey));
+  const isAsianCountry = (c) => ASIAN_KEYS.has(countryKey(c)) || ASIAN_KEYS.has(countryKey(toDcCountry(c)));
+  const PATRONYMIC_RE = /(ovich|evich|ovych|evych|ovič|evič|ovic|evic|yich|ovna|evna|ivna|ichna)$/i;
+  // Name prefixes that belong to the surname that follows (in addition to NAME_PARTICLES).
+  const SURNAME_PREFIXES = ['al', 'el', 'bin', 'ben', 'ibn', 'abu', 'abd', 'abdel', 'abdul', 'ould', 'bou', 'van', 'von', 'der', 'den', 'ter', 'mc', 'mac', 'st', 'st.'];
+  const ARAB_HYPHEN_PREFIX_RE = /\b(Al|El|Abd|Abdel|Abdul|Abu|Bin|Ben|Ibn|Ould|Bou)-(?=\S)/gi;
+
+  function normalizeNameChars(s) {
+    return (s || '')
+      .replace(/ß/g, 'ss').replace(/ẞ/g, 'SS')
+      .replace(/Þ/g, 'Th').replace(/þ/g, 'th')
+      .replace(/Ð/g, 'D').replace(/ð/g, 'd');
+  }
+
+  // Arab nationality: no hyphens at all; otherwise only Arabic prefixes
+  // ("Al-Habsi") lose the hyphen — "Jean-Pierre" stays.
+  function removeArabHyphens(s, isArab) {
+    const t = s || '';
+    return (isArab ? t.replace(/-/g, ' ') : t.replace(ARAB_HYPHEN_PREFIX_RE, '$1 ')).replace(/\s+/g, ' ').trim();
+  }
+
+  // { firstName, surname, fullName } as DC wants them. fullName is null when
+  // it would be the same as the short "Surname FirstName".
+  function finalizeNames(data) {
+    const country = toDcCountry(data.country || '');
+    const isArab = ARAB_COUNTRIES.includes(country);
+    const patron = PATRONYMIC_COUNTRIES.includes(country);
+    const prep = (s) => removeArabHyphens(normalizeNameChars(s), isArab);
+    const firstTok = prep(data.firstName).split(' ').filter(Boolean);
+    const surTok = prep(data.surname).split(' ').filter(Boolean);
+    const isPatronymic = (t) => patron && PATRONYMIC_RE.test(t);
+
+    const firstShort = firstTok.find((t) => !isPatronymic(t)) || firstTok[0] || '';
+
+    // Surname: leading particles/prefixes + the first real surname word.
+    let surShort = '';
+    const lead = [];
+    for (const t of surTok) {
+      if (isPatronymic(t)) continue;
+      const low = t.toLowerCase();
+      if (NAME_PARTICLES.includes(low) || SURNAME_PREFIXES.includes(low)) { lead.push(t); continue; }
+      surShort = [...lead, t].join(' ');
+      break;
+    }
+    if (!surShort) surShort = surTok.join(' ');
+
+    const full = [...surTok, ...firstTok].join(' ');
+    const short = [surShort, firstShort].filter(Boolean).join(' ');
+    return {
+      firstName: firstShort || null,
+      surname: surShort || null,
+      fullName: full && full !== short ? full : null,
+      isAsian: isAsianCountry(data.country),
+    };
+  }
+
   function mountNameSplitWidget(panel, tokens) {
     if (!tokens.length) return;
     GM_addStyle(`
@@ -498,9 +614,12 @@
         });
         chips.appendChild(chip);
       });
+      const fin = finalizeNames({ firstName: tokens.slice(0, NAME.split).join(' '), surname: tokens.slice(NAME.split).join(' ') });
       box.querySelector('.result').innerHTML =
         `First name: <b>${tokens.slice(0, NAME.split).join(' ') || '—'}</b><br>` +
-        `Surname: <b>${tokens.slice(NAME.split).join(' ') || '—'}</b>`;
+        `Surname: <b>${tokens.slice(NAME.split).join(' ') || '—'}</b><br>` +
+        `<span style="opacity:.8">→ DC: <b>${fin.firstName || '—'}</b> | <b>${fin.surname || '—'}</b>` +
+        `${fin.fullName ? `<br>Full Name: ${fin.fullName}` : ''}</span>`;
     };
     render();
   }
@@ -721,6 +840,24 @@
     }
 
     // ---- full structural parse of one document --------------------------
+    // Full legal name from the details table (players: .info-table, coaches:
+    // table.auflistung). Only Latin-script values are used ("Name in home
+    // country" can be Cyrillic, Arabic, ...).
+    const FULL_NAME_LABELS = ['full name', 'name in home country', 'vollständiger name', 'name im heimatland',
+      'nombre completo', 'nome completo', 'nom complet', 'nome completo', 'pełne imię i nazwisko', 'tam adı'];
+    function extractFullName(doc) {
+      const cells = [
+        ...Array.from(doc.querySelectorAll('.info-table__content--regular')).map((el) => [el, el.nextElementSibling]),
+        ...Array.from(doc.querySelectorAll('table.auflistung th')).map((th) => [th, th.nextElementSibling]),
+      ];
+      for (const [labelEl, valueEl] of cells) {
+        const label = clean(labelEl.textContent).replace(/:$/, '').toLowerCase();
+        const value = clean(valueEl?.textContent);
+        if (FULL_NAME_LABELS.includes(label) && value && /^[\p{Script=Latin}\s.'’-]+$/u.test(value)) return value;
+      }
+      return null;
+    }
+
     function parseTmDoc(doc, host) {
       const headlineWrapper = doc.querySelector('.data-header .data-header__headline-wrapper');
       let firstName = null;
@@ -731,6 +868,28 @@
         firstName = Array.from(headlineWrapper.childNodes)
           .filter((n) => n.nodeType === Node.TEXT_NODE)
           .map((n) => n.textContent.trim()).join(' ').trim() || null;
+        // Coach pages put the whole name in <strong> ("Hugo Chacon"):
+        // first word = first name, the rest = surname.
+        if (!firstName && surname && surname.includes(' ')) {
+          const parts = surname.split(' ');
+          firstName = parts[0];
+          surname = parts.slice(1).join(' ');
+        }
+      }
+      // Complete name ("Hugo Emanuel Barros Chacon"): split it right before the
+      // headline surname, so DC gets short names + the complete Full Name.
+      const full = extractFullName(doc);
+      if (full && surname) {
+        const tokens = full.split(' ');
+        const norm = tokens.map(normTok);
+        const sur = surname.split(' ').map(normTok);
+        for (let i = 1; i <= norm.length - sur.length; i++) {
+          if (sur.every((t, k) => norm[i + k] === t)) {
+            firstName = tokens.slice(0, i).join(' ');
+            surname = tokens.slice(i).join(' ');
+            break;
+          }
+        }
       }
       return {
         firstName,
@@ -1076,6 +1235,683 @@
   }
 
   // =======================================================================
+  // PART 1e: runs on UEFA.com player pages (soccer)
+  // =======================================================================
+  // e.g. /uefayouthleague/clubs/players/250226846--mark-csikos/
+  //      /uefachampionsleague/clubs/players/..., /uefaeuro/teams/players/...
+  // Page structure:
+  //  - schema.org microdata in the header: meta[itemprop=name|birthdate|
+  //    nationality|height] ("2007-05-06", "Hungary", height "0" = unknown)
+  //  - header name: .player-header__name--first / .player-header__name--last
+  //  - profile: .player-profile-category / .player-profile-value
+  //    (Position, Club number, Country, Date of birth "06/5/2007 (19)")
+  //  - [data-name="related-players"] data-options JSON with gender "MALE"/"FEMALE"
+  if (/^(www|en)\.uefa\.com$/.test(location.hostname) && /\/players\/\d+/.test(location.pathname)) {
+    const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const micro = (prop) => clean(document.querySelector(`.player-header meta[itemprop="${prop}"], meta[itemprop="${prop}"]`)?.getAttribute('content'));
+
+    function uefaProfile(label) {
+      const cat = Array.from(document.querySelectorAll('.player-profile-category'))
+        .find((el) => clean(el.textContent).toLowerCase() === label.toLowerCase());
+      const value = cat && (cat.parentElement.querySelector('.player-profile-value') || cat.nextElementSibling);
+      return clean(value?.textContent) || null;
+    }
+
+    function uefaDob() {
+      // Machine-readable first ("2007-05-06"), then the visible "06/5/2007 (19)" as day/month/year.
+      let m = micro('birthdate').match(/(\d{4})-(\d{2})-(\d{2})/);
+      if (m) return { y: m[1], m: m[2], d: m[3] };
+      m = (uefaProfile('Date of birth') || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+      return m ? { y: m[3], m: pad2(m[2]), d: pad2(m[1]) } : null;
+    }
+
+    function uefaGender() {
+      try {
+        const opts = JSON.parse(document.querySelector('[data-name="related-players"]')?.getAttribute('data-options') || '{}');
+        if (/^female$/i.test(opts.gender)) return 'Women';
+        if (/^male$/i.test(opts.gender)) return 'Men';
+      } catch (e) { /* ignore */ }
+      return /women/i.test(location.pathname) ? 'Women' : null;
+    }
+
+    function uefaPrepareName() {
+      const first = clean(document.querySelector('.player-header__name--first')?.textContent);
+      const last = clean(document.querySelector('.player-header__name--last')?.textContent);
+      const full = clean(`${first} ${last}`) || micro('name')
+        || clean((document.querySelector('meta[property="og:title"]')?.getAttribute('content') || document.title).split('|')[0]);
+      const tokens = nameTokens(full, null);
+      if (NAME.split === null) {
+        // The header separates first and last name — split exactly there.
+        const firstLen = first ? first.split(' ').length : 0;
+        NAME.split = first && last && firstLen < tokens.length ? firstLen : guessNameSplit(tokens, null);
+      }
+      return { tokens };
+    }
+
+    async function parseUefa() {
+      // Parts of the page are rendered client-side; wait for the profile.
+      await waitFor(() => document.querySelector('.player-profile-category') || micro('birthdate'), 8000, 150);
+      const { tokens } = uefaPrepareName();
+      const dob = uefaDob();
+      const positionText = uefaProfile('Position') || '';
+      const position = mapPositionAny(positionText);
+      if (positionText && !position) console.log(`[dc-ogol-fill] unrecognized position "${positionText}"`);
+      const h = parseInt(micro('height'), 10); // "0" = not known
+
+      return {
+        participantType: 'Player',
+        gender: uefaGender(),
+        surname: tokens.slice(NAME.split).join(' ') || null,
+        firstName: tokens.slice(0, NAME.split).join(' ') || null,
+        birthYear: dob ? dob.y : null,
+        birthMonth: dob ? dob.m : null,
+        birthDay: dob ? dob.d : null,
+        country: micro('nationality') || uefaProfile('Country'),
+        heightCm: h > 100 ? String(h) : null,
+        position,
+        sourceUrl: location.origin + location.pathname,
+        capturedAt: new Date().toISOString(),
+      };
+    }
+
+    const uefaPanel = makeSourcePanel('Capture player data for DC (UEFA)', parseUefa);
+    waitFor(() => document.querySelector('.player-header__name--last') || micro('name'), 8000, 150).then(() => {
+      mountNameSplitWidget(uefaPanel, uefaPrepareName().tokens);
+    });
+  }
+
+  // =======================================================================
+  // PART 1f: runs on Sofascore player pages (football + ice hockey)
+  // =======================================================================
+  // e.g. /football/player/enzo-fernandez/974505, /ice-hockey/player/.../ID
+  // Primary source: Sofascore's own JSON API, same origin as the page
+  // (/api/v1/player/{id}): English country name, height, birth timestamp,
+  // position code, gender, sport. Fallback: the profile chips in the page
+  // header (flag img + country, "17 January 2001 (25)", "Midfielder", "177 cm").
+  // Sofascore is a Next.js SPA: after navigating to another player inside
+  // the site, reload the page (F5) so the panel picks up the new player.
+  if (location.hostname === 'www.sofascore.com' && /\/player\/[^/]+\/\d+/.test(location.pathname)) {
+    const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const EN_MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+    const currentId = () => (location.pathname.match(/\/player\/[^/]+\/(\d+)/) || [])[1];
+    const isHockeyUrl = () => /ice-hockey|hokej|eishockey/i.test(location.pathname);
+
+    async function fetchSofaPlayer(id) {
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 8000);
+        const res = await fetch(`/api/v1/player/${id}`, { credentials: 'include', signal: ctrl.signal });
+        clearTimeout(timer);
+        if (!res.ok) { console.log('[dc-ogol-fill] Sofascore API status', res.status); return null; }
+        return (await res.json()).player || null;
+      } catch (e) {
+        console.log('[dc-ogol-fill] Sofascore API error', e);
+        return null;
+      }
+    }
+
+    // Header chips: every "img/svg + span" item under the profile card.
+    function sofaChips() {
+      return Array.from(document.querySelectorAll('.card-component span[class*="textStyle_display.micro"]'))
+        .map((span) => ({ span, text: clean(span.textContent), flag: span.parentElement?.querySelector('img[src*="/country/"]') }));
+    }
+
+    function domFacts() {
+      const chips = sofaChips();
+      const countryChip = chips.find((c) => c.flag);
+      const dobText = chips.map((c) => c.text).find((t) => /\d{1,2} [A-Za-z]+ \d{4}/.test(t)) || '';
+      const heightText = chips.map((c) => c.text).find((t) => /\d{3}\s*cm/.test(t)) || '';
+      const positionText = chips.map((c) => c.text).find((t) => mapPositionAny(t)) || '';
+      let dob = null;
+      const m = dobText.match(/(\d{1,2}) ([A-Za-z]{3})[a-z]* (\d{4})/);
+      if (m && EN_MONTHS[m[2].toLowerCase()]) dob = { y: m[3], m: pad2(EN_MONTHS[m[2].toLowerCase()]), d: pad2(m[1]) };
+      const alpha2 = countryChip?.flag.getAttribute('alt') || (countryChip?.flag.getAttribute('src').match(/\/country\/([A-Z]{2})\//) || [])[1];
+      let countryFromCode = null;
+      try { if (alpha2) countryFromCode = new Intl.DisplayNames(['en'], { type: 'region' }).of(alpha2); } catch (e) { /* not ISO */ }
+      return {
+        name: clean(document.querySelector('.card-component h2')?.textContent) || clean(document.title.split(/[:|-]/)[0]),
+        country: countryChip?.text || (countryFromCode !== alpha2 ? countryFromCode : null),
+        dob,
+        heightCm: (heightText.match(/(\d{3})/) || [])[1] || null,
+        positionText,
+      };
+    }
+
+    // API position codes: G / D / M / F (football), G / D / F, C, LW, RW (hockey).
+    function mapSofaPosition(code) {
+      const c = String(code || '').toUpperCase();
+      if (c === 'G') return 'Goalkeeper';
+      if (c === 'D') return 'Defender';
+      if (c === 'M') return 'Midfielder';
+      if (['F', 'C', 'LW', 'RW', 'W'].includes(c)) return 'Forward';
+      return null;
+    }
+
+    function sofaPrepareName(api) {
+      const dom = domFacts();
+      const full = clean(api?.name) || dom.name;
+      const tokens = nameTokens(full, null);
+      if (NAME.split === null) {
+        const first = clean(api?.firstName);
+        const firstLen = first ? first.split(' ').length : 0;
+        NAME.split = first && api?.lastName && firstLen < tokens.length ? firstLen : guessNameSplit(tokens, null);
+      }
+      return { tokens };
+    }
+
+    let apiPromise = null;
+    const getApi = () => (apiPromise = apiPromise || fetchSofaPlayer(currentId()));
+
+    async function parseSofascore() {
+      await waitFor(() => document.querySelector('.card-component h2'), 8000, 150);
+      const api = await getApi();
+      const dom = domFacts();
+      const { tokens } = sofaPrepareName(api);
+
+      let dob = dom.dob;
+      if (api && Number.isFinite(api.dateOfBirthTimestamp)) {
+        const d = new Date(api.dateOfBirthTimestamp * 1000); // midnight UTC
+        dob = { y: String(d.getUTCFullYear()), m: pad2(d.getUTCMonth() + 1), d: pad2(d.getUTCDate()) };
+      }
+      const sportSlug = api?.team?.sport?.slug || (isHockeyUrl() ? 'ice-hockey' : 'football');
+      const isHockey = sportSlug === 'ice-hockey';
+      const position = mapSofaPosition(api?.position) || mapPositionAny(dom.positionText);
+      const height = api?.height > 100 ? String(api.height) : dom.heightCm;
+      const gender = api?.gender === 'F' ? 'Women' : (api?.gender === 'M' ? 'Men' : null);
+      if (!api) console.log('[dc-ogol-fill] Sofascore: API unavailable — using page data');
+
+      return {
+        participantType: 'Player',
+        sport: isHockey ? 'Hockey' : undefined,
+        gender,
+        surname: tokens.slice(NAME.split).join(' ') || null,
+        firstName: tokens.slice(0, NAME.split).join(' ') || null,
+        birthYear: dob ? dob.y : null,
+        birthMonth: dob ? dob.m : null,
+        birthDay: dob ? dob.d : null,
+        country: clean(api?.country?.name) || dom.country || null,
+        heightCm: height || null,
+        position,
+        sourceUrl: location.origin + location.pathname,
+        capturedAt: new Date().toISOString(),
+      };
+    }
+
+    const sofaPanel = makeSourcePanel('Capture player data for DC (Sofascore)', parseSofascore);
+    waitFor(() => document.querySelector('.card-component h2'), 8000, 150).then(async () => {
+      const api = await getApi();
+      mountNameSplitWidget(sofaPanel, sofaPrepareName(api).tokens);
+    });
+  }
+
+  // =======================================================================
+  // PART 1g: runs on the internal Opta player detail (opta / opta-data.lsoffice.cz)
+  // =======================================================================
+  // #playerHeaderDiv rows (the .col-6 cells):
+  //   "G. Varela"                                  display name (+ Career Stats link)
+  //   "Defender, CR Flamengo"                      position, club
+  //   "Varela Olivera Guillermo, Uruguay"          SURNAME(S) FIRST NAME(S), country
+  //   "Born: 1993-03-24, Montevideo, Uruguay"
+  //   "Gender: Male | Height: 173 cm | Weight: 73 kg | Foot: right"
+  // The match block title "Player Match Stats of Guillermo Varela Olivera"
+  // gives the same name in first-name-first order, which tells exactly where
+  // the surname ends. Without it, the display name initial ("G.") is used.
+  if (/^opta(-data)?\.lsoffice\.cz$/.test(location.hostname) && location.pathname.includes('opta-player-detail')) {
+    const clean = (s) => (s || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+    const normTokens = (s) => clean(s).split(' ').filter(Boolean).map(normTok);
+
+    function optaCells() {
+      return Array.from(document.querySelectorAll('#playerHeaderDiv .row > .col-6'))
+        .map((el) => clean(el.textContent)).filter(Boolean);
+    }
+
+    function optaHeader() {
+      const cells = optaCells();
+      const bornCell = cells.find((c) => /^Born:/i.test(c)) || '';
+      const genderCell = cells.find((c) => /Gender:/i.test(c)) || '';
+      const rest = cells.filter((c) => c !== bornCell && c !== genderCell);
+      const displayName = clean((rest[0] || '').replace(/Career Stats.*$/i, ''));
+      const posCell = rest[1] || '';
+      const nameCell = rest[2] || '';
+      const cut = nameCell.lastIndexOf(',');
+      return {
+        displayName,
+        positionText: clean(posCell.split(',')[0]),
+        nameLastFirst: clean(cut >= 0 ? nameCell.slice(0, cut) : nameCell),
+        country: cut >= 0 ? clean(nameCell.slice(cut + 1)) : null,
+        bornCell,
+        genderCell,
+      };
+    }
+
+    // "Varela Olivera Guillermo" -> { first: ["Guillermo"], last: ["Varela","Olivera"] }
+    function optaSplitName(h) {
+      const lf = clean(h.nameLastFirst).split(' ').filter(Boolean);
+      if (lf.length < 2) return { first: [], last: lf };
+      const lfNorm = lf.map(normTok);
+      // 1) Match title "Player Match Stats of <First Last>": find the rotation.
+      const title = clean(document.querySelector('#playerMatchRecordDiv .col-6')?.childNodes[0]?.textContent);
+      const titleName = (title.match(/Player Match Stats of (.+)$/i) || [])[1];
+      if (titleName) {
+        const t = normTokens(titleName);
+        for (let k = 1; k < lf.length; k++) {
+          const rotated = [...lfNorm.slice(k), ...lfNorm.slice(0, k)];
+          if (rotated.join(' ') === t.join(' ')) return { first: lf.slice(k), last: lf.slice(0, k) };
+        }
+      }
+      // 2) Display name "G. Varela": surname starts the string, the first name
+      //    starts with the initial — take the last token(s) from that initial on.
+      const dm = h.displayName.match(/^([A-Za-zÀ-ž])\.\s*(.+)$/);
+      if (dm) {
+        const initial = normTok(dm[1]);
+        for (let k = 1; k < lf.length; k++) {
+          if (lfNorm[k].startsWith(initial)) return { first: lf.slice(k), last: lf.slice(0, k) };
+        }
+      }
+      // 3) Fallback: last token is the first name.
+      return { first: lf.slice(-1), last: lf.slice(0, -1) };
+    }
+
+    function optaPrepareName() {
+      const { first, last } = optaSplitName(optaHeader());
+      const tokens = [...first, ...last];
+      if (NAME.split === null) NAME.split = first.length;
+      return { tokens };
+    }
+
+    function parseOpta() {
+      const h = optaHeader();
+      const { tokens } = optaPrepareName();
+      const dm = h.bornCell.match(/(\d{4})-(\d{2})-(\d{2})/);
+      const gender = (h.genderCell.match(/Gender:\s*(\w+)/i) || [])[1] || '';
+      const height = (h.genderCell.match(/Height:\s*(\d{3})\s*cm/i) || [])[1] || null;
+      const position = mapPositionAny(h.positionText);
+      if (h.positionText && !position) console.log(`[dc-ogol-fill] unrecognized position "${h.positionText}"`);
+
+      return {
+        participantType: 'Player',
+        gender: /^female$/i.test(gender) ? 'Women' : (/^male$/i.test(gender) ? 'Men' : null),
+        surname: tokens.slice(NAME.split).join(' ') || null,
+        firstName: tokens.slice(0, NAME.split).join(' ') || null,
+        birthYear: dm ? dm[1] : null,
+        birthMonth: dm ? dm[2] : null,
+        birthDay: dm ? dm[3] : null,
+        country: h.country,
+        heightCm: height,
+        position,
+        // keep the player id, drop the match id
+        sourceUrl: `${location.origin}${location.pathname}?optaPlayerId=${new URLSearchParams(location.search).get('optaPlayerId') || ''}`,
+        capturedAt: new Date().toISOString(),
+      };
+    }
+
+    const optaPanel = makeSourcePanel('Capture player data for DC (Opta)', parseOpta);
+    waitFor(() => optaHeader().nameLastFirst, 5000, 100).then(() => {
+      mountNameSplitWidget(optaPanel, optaPrepareName().tokens);
+    });
+  }
+
+  // =======================================================================
+  // PART 1h: runs on Baseball-Reference player pages (baseball)
+  // =======================================================================
+  // e.g. /players/t/teixema01.shtml — #meta block:
+  //   h1 span "Mark Teixeira", "Position: First Baseman",
+  //   "6-3, 225lb (190cm, 102kg)", span#necro-birth[data-birth="1980-04-11"],
+  //   flags as <span class="f-i f-us">us</span> (birthplace, National Team),
+  //   "Full Name: Mark Charles Teixeira".
+  if (location.hostname === 'www.baseball-reference.com' && /^\/players\/[a-z]\/[^/]+\.shtml/.test(location.pathname)) {
+    const clean = (s) => (s || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+
+    // Text after a <strong>Label:</strong> inside #meta paragraphs.
+    function brFact(label) {
+      const strong = Array.from(document.querySelectorAll('#meta p strong'))
+        .find((s) => clean(s.textContent).replace(/:$/, '').toLowerCase() === label.toLowerCase());
+      if (!strong) return null;
+      const p = strong.closest('p');
+      return clean(p.textContent.slice(p.textContent.indexOf(strong.textContent) + strong.textContent.length)).replace(/^:\s*/, '');
+    }
+
+    // Country from the flag code: National Team first, then birthplace.
+    function brCountry() {
+      const paras = Array.from(document.querySelectorAll('#meta p'));
+      const natP = paras.find((p) => /National Team/i.test(p.querySelector('strong')?.textContent || ''));
+      const bornP = document.querySelector('#necro-birth')?.closest('p');
+      const flag = natP?.querySelector('span.f-i') || bornP?.querySelector('span.f-i');
+      const code = flag ? (Array.from(flag.classList).find((c) => /^f-[a-z]{2}$/.test(c)) || '').slice(2) : '';
+      if (!code) return null;
+      try {
+        const name = new Intl.DisplayNames(['en'], { type: 'region' }).of(code.toUpperCase());
+        return name && name !== code.toUpperCase() ? name : null;
+      } catch (e) { return null; }
+    }
+
+    // B-R position(s) -> DC participant types. DC uses a group type plus the
+    // specific one for infield/outfield:
+    //   Pitcher | Catcher | Designated Hitter
+    //   Infielder + First baseman / Second baseman / Third baseman / Shortstop
+    //   Outfielder + Left fielder / Center fielder / Right fielder
+    // "Shortstop, Second Baseman and Third Baseman" ->
+    //   [Infielder, Shortstop, Second baseman, Third baseman]
+    const BASEBALL_POSITIONS = [
+      [/pitcher/, null, 'Pitcher'],
+      [/catcher/, null, 'Catcher'],
+      [/designated hitter/, null, 'Designated Hitter'],
+      [/first base/, 'Infielder', 'First baseman'],
+      [/second base/, 'Infielder', 'Second baseman'],
+      [/third base/, 'Infielder', 'Third baseman'],
+      [/shortstop/, 'Infielder', 'Shortstop'],
+      [/infield/, 'Infielder', null],
+      [/left ?field/, 'Outfielder', 'Left fielder'],
+      [/cent(er|re) ?field/, 'Outfielder', 'Center fielder'],
+      [/right ?field/, 'Outfielder', 'Right fielder'],
+      [/outfield/, 'Outfielder', null],
+    ];
+
+    function mapBaseballPositions(text) {
+      const out = [];
+      const add = (p) => { if (p && !out.includes(p)) out.push(p); };
+      for (const part of (text || '').toLowerCase().split(/,|\band\b|\//).map((x) => x.trim()).filter(Boolean)) {
+        const hit = BASEBALL_POSITIONS.find(([re]) => re.test(part));
+        if (hit) { add(hit[1]); add(hit[2]); }
+      }
+      return out;
+    }
+
+    // Full name "Mark Charles Teixeira" split right before the surname of
+    // the display name "Mark Teixeira" (everything after its first word).
+    function brPrepareName() {
+      const display = clean(document.querySelector('#meta h1 span')?.textContent || document.querySelector('#meta h1')?.textContent);
+      const full = brFact('Full Name') || display;
+      const tokens = nameTokens(full, null);
+      if (NAME.split === null) {
+        const dispTok = display.split(' ').filter(Boolean);
+        const lastTok = dispTok.slice(1).map(normTok);
+        const norm = tokens.map(normTok);
+        let split = null;
+        if (lastTok.length) {
+          for (let i = 1; i <= norm.length - lastTok.length; i++) {
+            if (lastTok.every((t, k) => norm[i + k] === t)) { split = i; break; }
+          }
+        }
+        NAME.split = split ?? guessNameSplit(tokens, null);
+      }
+      return { tokens };
+    }
+
+    function parseBaseballRef() {
+      const { tokens } = brPrepareName();
+      const birth = document.querySelector('#necro-birth')?.getAttribute('data-birth') || '';
+      const dm = birth.match(/(\d{4})-(\d{2})-(\d{2})/);
+      const metaText = clean(document.querySelector('#meta')?.textContent);
+      const cm = (metaText.match(/\((\d{3})\s*cm/) || [])[1] || null;
+      const positionText = brFact('Position') || brFact('Positions') || '';
+      const positions = mapBaseballPositions(positionText);
+      if (positionText && !positions.length) console.log(`[dc-ogol-fill] unrecognized position "${positionText}"`);
+
+      return {
+        participantType: 'Player',
+        sport: 'Baseball',
+        surname: tokens.slice(NAME.split).join(' ') || null,
+        firstName: tokens.slice(0, NAME.split).join(' ') || null,
+        birthYear: dm ? dm[1] : null,
+        birthMonth: dm ? dm[2] : null,
+        birthDay: dm ? dm[3] : null,
+        country: brCountry(),
+        heightCm: cm,
+        position: positions[0] || null,
+        positions,
+        sourceUrl: location.origin + location.pathname,
+        capturedAt: new Date().toISOString(),
+      };
+    }
+
+    const brPanel = makeSourcePanel('Capture player data for DC (Baseball-Reference)', parseBaseballRef);
+    mountNameSplitWidget(brPanel, brPrepareName().tokens);
+  }
+
+  // =======================================================================
+  // PART 1i: runs on Soccerdonna player pages (women's football)
+  // =======================================================================
+  // e.g. /en/olivia-wingate/profil/spieler_82410.html (also /de/...).
+  // Header h1 "29 Olivia Wingate" (shirt number first); profile table
+  // .tabelle_spieler with label/value rows: Date of birth "20.02.2000",
+  // Name in native country "Olivia Ann Wingate", Height "1,70",
+  // Nationality (flag img title + text), Position "Striker - Left Wing".
+  // Soccerdonna is Transfermarkt's women's site: flag image IDs are the same,
+  // so the TM flag cache (ID -> English name) translates /de/ pages too.
+  // Gender is always Women.
+  if (location.hostname.endsWith('soccerdonna.de') && /\/profil\/spieler_\d+/.test(location.pathname)) {
+    const clean = (s) => (s || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const isEnglish = location.pathname.startsWith('/en/');
+    const SD_LABELS = {
+      born: ['Date of birth', 'Geburtsdatum'],
+      nativeName: ['Name in native country', 'Name im Heimatland', 'Vollständiger Name', 'Full name'],
+      height: ['Height', 'Größe'],
+      nationality: ['Nationality', 'Nationalität'],
+      position: ['Position'],
+    };
+    const FLAG_CACHE_KEY = 'dcTmFlagNames'; // shared with the Transfermarkt part
+
+    function sdRow(labels) {
+      const wanted = labels.map((l) => l.toLowerCase());
+      const row = Array.from(document.querySelectorAll('table.tabelle_spieler tr')).find((tr) => {
+        const first = tr.querySelector('td');
+        return first && wanted.includes(clean(first.textContent).replace(/:$/, '').toLowerCase());
+      });
+      const cell = row?.querySelectorAll('td')[1];
+      return cell ? { cell, text: clean(cell.textContent) } : null;
+    }
+
+    const flagId = (img) => ((img?.getAttribute('src') || '').match(/\/flaggen\/(\d+)\./) || [])[1] || null;
+    const loadFlagCache = () => { try { return JSON.parse(GM_getValue(FLAG_CACHE_KEY, '{}')) || {}; } catch (e) { return {}; } };
+
+    // Nationality flag in a document: { id, title }.
+    function sdNationalityFlag(doc) {
+      const wanted = SD_LABELS.nationality.map((l) => l.toLowerCase());
+      const row = Array.from(doc.querySelectorAll('table.tabelle_spieler tr')).find((tr) => {
+        const first = tr.querySelector('td');
+        return first && wanted.includes(clean(first.textContent).replace(/:$/, '').toLowerCase());
+      });
+      const cell = row?.querySelectorAll('td')[1];
+      const img = cell?.querySelector('img[title]');
+      return { id: flagId(img), title: clean(img?.getAttribute('title')) || clean(cell?.textContent) || null };
+    }
+
+    function learnFlag(id, englishTitle) {
+      if (!id || !englishTitle) return;
+      const cache = loadFlagCache();
+      if (cache[id] !== englishTitle) {
+        cache[id] = englishTitle;
+        GM_setValue(FLAG_CACHE_KEY, JSON.stringify(cache));
+      }
+    }
+
+    // Same page in English (/de/... -> /en/...), same origin.
+    async function fetchEnglishDoc() {
+      const enPath = location.pathname.replace(/^\/[a-z]{2}\//, '/en/');
+      try {
+        const res = await fetch(enPath, { credentials: 'include' });
+        if (!res.ok) { console.log('[dc-ogol-fill] Soccerdonna EN page status', res.status); return null; }
+        return new DOMParser().parseFromString(await res.text(), 'text/html');
+      } catch (e) {
+        console.log('[dc-ogol-fill] Soccerdonna EN page error', e);
+        return null;
+      }
+    }
+
+    // English country name: this page if it's /en/, else the flag cache,
+    // else the /en/ version of the page; the local (German) name is last resort.
+    async function sdCountry() {
+      const local = sdNationalityFlag(document);
+      if (isEnglish) { learnFlag(local.id, local.title); return local.title; }
+      const cached = local.id && loadFlagCache()[local.id];
+      if (cached) return cached;
+      const enDoc = await fetchEnglishDoc();
+      const en = enDoc ? sdNationalityFlag(enDoc) : null;
+      if (en?.title) { learnFlag(en.id || local.id, en.title); return en.title; }
+      console.log(`[dc-ogol-fill] country "${local.title}" not translated — check it in DC`);
+      return local.title;
+    }
+
+    function sdPrepareName() {
+      const display = clean(document.querySelector('h1')?.textContent).replace(/^\d+\s+/, ''); // "29 Olivia Wingate"
+      const full = sdRow(SD_LABELS.nativeName)?.text || display;
+      const tokens = nameTokens(full, null);
+      if (NAME.split === null) {
+        // Split before the surname of the display name (everything after its first word).
+        const lastTok = display.split(' ').filter(Boolean).slice(1).map(normTok);
+        const norm = tokens.map(normTok);
+        let split = null;
+        if (lastTok.length) {
+          for (let i = 1; i <= norm.length - lastTok.length; i++) {
+            if (lastTok.every((t, k) => norm[i + k] === t)) { split = i; break; }
+          }
+        }
+        NAME.split = split ?? guessNameSplit(tokens, null);
+      }
+      return { tokens };
+    }
+
+    async function parseSoccerdonna() {
+      const { tokens } = sdPrepareName();
+      const dm = (sdRow(SD_LABELS.born)?.text || '').match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+      const hm = (sdRow(SD_LABELS.height)?.text || '').match(/(\d)[,.](\d{2})/);
+      // "Striker - Left Wing" -> main position "Striker"
+      const positionText = sdRow(SD_LABELS.position)?.text || '';
+      const position = mapPositionAny(positionText.split(' - ')[0]) || mapPositionAny(positionText);
+      if (positionText && !position) console.log(`[dc-ogol-fill] unrecognized position "${positionText}"`);
+
+      return {
+        participantType: 'Player',
+        gender: 'Women',
+        surname: tokens.slice(NAME.split).join(' ') || null,
+        firstName: tokens.slice(0, NAME.split).join(' ') || null,
+        birthYear: dm ? dm[3] : null,
+        birthMonth: dm ? pad2(dm[2]) : null,
+        birthDay: dm ? pad2(dm[1]) : null,
+        country: await sdCountry(),
+        heightCm: hm ? String(Math.round(parseFloat(`${hm[1]}.${hm[2]}`) * 100)) : null,
+        position,
+        sourceUrl: location.origin + location.pathname,
+        capturedAt: new Date().toISOString(),
+      };
+    }
+
+    const sdPanel = makeSourcePanel('Capture player data for DC (Soccerdonna)', parseSoccerdonna);
+    mountNameSplitWidget(sdPanel, sdPrepareName().tokens);
+  }
+
+  // =======================================================================
+  // PART 1j: runs on BeSoccer player pages (football)
+  // =======================================================================
+  // e.g. /player/w-saliba-726141 — #mod_player_stats panel:
+  //   h2.panel-title "W. Saliba" (short), .panel-subtitle "William Alain André Gabriel Saliba"
+  //   .stat blocks, identified by their unit labels (layout varies):
+  //     "years" block: age + flag + country name ("France")
+  //     "kgs" block:   weight + role badge (.bg-role.rol1-4, "GK/DEF/MID/FWD") + "position"
+  //     "cms" block:   height ("192" or "-")
+  //   "Born on 24 March 2001 in Bondy"
+  if (location.hostname === 'www.besoccer.com' && /^\/player\//.test(location.pathname)) {
+    const clean = (s) => (s || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const EN_MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+    const panel = () => document.querySelector('#mod_player_stats') || document;
+
+    // The .stat block whose small-row labels include the given unit.
+    function bsStat(unit) {
+      return Array.from(panel().querySelectorAll('.stat')).find((st) =>
+        Array.from(st.querySelectorAll('.small-row')).some((r) => clean(r.textContent).toLowerCase() === unit));
+    }
+
+    function bsCountry() {
+      const st = bsStat('years');
+      if (st) {
+        const rows = Array.from(st.querySelectorAll('.small-row')).map((r) => clean(r.textContent)).filter((t) => t && t.toLowerCase() !== 'years');
+        if (rows.length) return rows[rows.length - 1];
+      }
+      // Fallback: "Nationality" / "Country of birth" rows.
+      const row = Array.from(panel().querySelectorAll('.table-row')).find((r) =>
+        /^(nationality|country of birth)$/i.test(clean(r.firstElementChild?.textContent)));
+      return clean(row?.querySelector('img[alt]')?.getAttribute('alt')) || clean(row?.lastElementChild?.textContent) || null;
+    }
+
+    // Role badge: class rol1..rol4 or its text (GK/POR, DEF, MID, FWD/ATT/DEL).
+    function bsPosition() {
+      const badge = panel().querySelector('.bg-role');
+      const cls = (badge?.className.match(/\brol(\d)\b/) || [])[1];
+      const byClass = { 1: 'Goalkeeper', 2: 'Defender', 3: 'Midfielder', 4: 'Forward' }[cls];
+      if (byClass) return byClass;
+      const t = clean(badge?.textContent).toUpperCase();
+      if (/^(GK|POR)$/.test(t)) return 'Goalkeeper';
+      if (/^DEF$/.test(t)) return 'Defender';
+      if (/^(MID|MED)$/.test(t)) return 'Midfielder';
+      if (/^(FWD|ATT|DEL|FOR)$/.test(t)) return 'Forward';
+      return null;
+    }
+
+    function bsHeight() {
+      const big = clean(bsStat('cms')?.querySelector('.big-row')?.textContent);
+      return /^\d{3}$/.test(big) ? big : null;
+    }
+
+    function bsDob() {
+      const p = Array.from(panel().querySelectorAll('p')).map((x) => clean(x.textContent)).find((t) => /^Born on/i.test(t)) || '';
+      const m = p.match(/(\d{1,2}) ([A-Za-z]{3})[a-z]* (\d{4})/);
+      if (!m || !EN_MONTHS[m[2].toLowerCase()]) return null;
+      const dob = { y: m[3], m: pad2(EN_MONTHS[m[2].toLowerCase()]), d: pad2(m[1]) };
+      return dob;
+    }
+
+    // Full name "William Alain André Gabriel Saliba" split before the surname
+    // of the short title "W. Saliba" (or everything after the first word).
+    function bsPrepareName() {
+      const short = clean(panel().querySelector('.panel-title')?.textContent);
+      const full = clean(panel().querySelector('.panel-subtitle')?.textContent) || short;
+      const tokens = nameTokens(full, null);
+      if (NAME.split === null) {
+        const shortTok = short.split(' ').filter(Boolean);
+        const lastTok = (/^[^\s.]{1,3}\.$/.test(shortTok[0] || '') ? shortTok.slice(1) : shortTok.slice(1)).map(normTok);
+        const norm = tokens.map(normTok);
+        let split = null;
+        if (lastTok.length) {
+          for (let i = 1; i <= norm.length - lastTok.length; i++) {
+            if (lastTok.every((t, k) => norm[i + k] === t)) { split = i; break; }
+          }
+        }
+        NAME.split = split ?? guessNameSplit(tokens, null);
+      }
+      return { tokens };
+    }
+
+    async function parseBeSoccer() {
+      await waitFor(() => panel().querySelector('.panel-title'), 5000, 100);
+      const { tokens } = bsPrepareName();
+      const dob = bsDob();
+      return {
+        participantType: 'Player',
+        surname: tokens.slice(NAME.split).join(' ') || null,
+        firstName: tokens.slice(0, NAME.split).join(' ') || null,
+        birthYear: dob ? dob.y : null,
+        birthMonth: dob ? dob.m : null,
+        birthDay: dob ? dob.d : null,
+        country: bsCountry(),
+        heightCm: bsHeight(),
+        position: bsPosition(),
+        sourceUrl: location.origin + location.pathname,
+        capturedAt: new Date().toISOString(),
+      };
+    }
+
+    const bsPanel = makeSourcePanel('Capture player data for DC (BeSoccer)', parseBeSoccer);
+    waitFor(() => panel().querySelector('.panel-title'), 5000, 100).then(() => {
+      mountNameSplitWidget(bsPanel, bsPrepareName().tokens);
+    });
+  }
+
+  // =======================================================================
   // PART 2: runs on the DC "new participant" page — fills the form
   // =======================================================================
   if (location.hostname.includes('dc.livesport.eu')
@@ -1257,7 +2093,8 @@
       const mainType = data.participantType === 'Coach' ? 'Coach' : 'Player';
 
       // Sources set data.sport ('Hockey' from EliteProspects); default is soccer.
-      const sportCandidates = data.sport === 'Hockey' ? ['Hockey', 'Ice Hockey'] : ['Soccer'];
+      const SPORT_CANDIDATES = { Hockey: ['Hockey', 'Ice Hockey'], Baseball: ['Baseball'] };
+      const sportCandidates = SPORT_CANDIDATES[data.sport] || ['Soccer'];
       log(`Setting Sport = ${sportCandidates[0]}...`);
       const sportField = document.querySelector('[data-test-id="jonas-field-participant-participantHasSport"]');
       const sportSelectContainer = sportField?.querySelector('[data-test-id="jonas-attr-select-sport-container"]');
@@ -1275,14 +2112,22 @@
       if (firstTypeRow) await setReactSelect(firstTypeRow, mainType);
       await sleep(200);
 
-      if (mainType === 'Player' && data.position) {
-        log(`Adding participant type row for position: ${data.position}`);
-        const typeField = clickAddNewItem('jonas-field-participant-participantHasParticipantTypes');
-        await sleep(300);
-        if (typeField) {
-          const rows = typeField.querySelectorAll('[data-test-id="jonas-attr-relation-participantType-container"]');
-          const newRowContainer = rows[rows.length - 1];
-          if (newRowContainer) await setReactSelect(newRowContainer, data.position);
+      // One participant-type row per position. Most sources give a single
+      // position; baseball gives a group + specific ones
+      // (e.g. Infielder + First baseman + Third baseman).
+      const positions = (Array.isArray(data.positions) && data.positions.length) ? data.positions
+        : (data.position ? [data.position] : []);
+      if (mainType === 'Player' && positions.length) {
+        for (const pos of positions) {
+          log(`Adding participant type row for position: ${pos}`);
+          const typeField = clickAddNewItem('jonas-field-participant-participantHasParticipantTypes');
+          await sleep(300);
+          if (typeField) {
+            const rows = typeField.querySelectorAll('[data-test-id="jonas-attr-relation-participantType-container"]');
+            const newRowContainer = rows[rows.length - 1];
+            if (newRowContainer) await setReactSelect(newRowContainer, pos);
+          }
+          await sleep(200);
         }
       } else if (mainType === 'Player') {
         log('No recognizable position found — skipping.');
@@ -1311,6 +2156,10 @@
 
       const getPropsBlock = () => document.querySelector('[data-test-id="jonas-field-participant-propertyData"]');
       if (getPropsBlock()) {
+        // Manual rules: one surname + one first name, the rest in Full Name;
+        // ß/Þ/ð replacements, no Arabic hyphens, no patronymics.
+        const names = finalizeNames(data);
+        data = { ...data, surname: names.surname, firstName: names.firstName };
         if (data.surname) {
           const surnameClean = stripDiacritics(data.surname);
           log(`Setting Surname = ${surnameClean}`);
@@ -1327,6 +2176,21 @@
           else log('First Name input not found.');
         }
         await sleep(500);
+
+        // Full Name (DC regenerates it from Surname + First Name, so set it after).
+        if (names.fullName) {
+          const fullClean = stripDiacritics(names.fullName);
+          log(`Setting Full Name = ${fullClean}`);
+          const fullInput = getPropsBlock()?.querySelector('input[id$="_p_1_name_data_name_0"]');
+          if (fullInput) setNativeValue(fullInput, fullClean);
+          else log('Full Name input not found.');
+          await sleep(500);
+        }
+
+        // Asian players: Short Name = Full Name only after the user confirms
+        // (nationality alone isn't enough — e.g. Hong Kong: "Chun-Lok Tan" yes,
+        // "Raphaël Merkies" no). The panel shows a hint + button.
+        if (names.isAsian) log(`${toDcCountry(data.country)} — if the name is Asian, use "Copy Full Name → Short Name" in this panel.`);
 
         // Sources set data.gender only when they know it (worldfootball,
         // EliteProspects "(W)" leagues); otherwise the default applies.
@@ -1345,7 +2209,15 @@
           const dateStr = formatDate(data.birthYear, data.birthMonth, data.birthDay);
           log(`Setting Birthday = ${dateStr} (adjust CONFIG.dateFormat if this looks wrong)`);
           const birthdayInput = getPropsBlock()?.querySelector('input[id$="_cal_10_dp"]');
-          if (birthdayInput) setNativeValue(birthdayInput, dateStr);
+          if (birthdayInput) {
+            setNativeValue(birthdayInput, dateStr);
+            if (isJan1(data)) {
+              birthdayInput.style.outline = '3px solid #f5a623';
+              birthdayInput.style.outlineOffset = '1px';
+              birthdayInput.title = 'Birth date is 1 January — verify it (often a placeholder when only the year is known)';
+              log(jan1Message(data));
+            }
+          }
           else log('Birthday input not found.');
         }
         await sleep(500);
@@ -1392,6 +2264,14 @@
         background: rgba(255,255,255,0.03); border-radius: 6px; padding: 8px 10px;
         border: 1px solid rgba(255,255,255,0.05);
       }
+      #dc-ogol-date-warning {
+        display: none; margin-bottom: 10px; padding: 8px 10px; border-radius: 6px;
+        background: #f5a623; color: #1a1a1a; font-weight: 600; line-height: 1.4;
+      }
+      #dc-ogol-asian-hint {
+        display: none; margin-bottom: 8px; padding: 8px 10px; border-radius: 6px;
+        background: #1f5fa8; color: #FFFFFF; line-height: 1.4;
+      }
       #dc-ogol-panel hr { margin: 10px 0; border: none; border-top: 1px solid rgba(255,255,255,0.08); }
       #dc-ogol-panel label.dc-ogol-label { display: block; margin-bottom: 6px; color: #8a9ba3; }
       #dc-ogol-panel input[type="text"] {
@@ -1411,14 +2291,19 @@
     const panel = document.createElement('div');
     panel.id = 'dc-ogol-panel';
     panel.innerHTML = `
-      <div class="dc-ogol-title"><span class="dot"></span>DC ⟵ oGol/Transfermarkt fill</div>
-      <div id="dc-ogol-status">No data captured yet. Open a player/coach profile in another tab and click "Capture" or "Create participant in DC" there.</div>
+      <div class="dc-ogol-title"><span class="dot"></span>DC Participant Importer</div>
+      <div id="dc-ogol-status">No data captured yet. Open a player/coach profile in another tab and click "Create participant in DC" there.</div>
+      <div id="dc-ogol-date-warning"></div>
       <button id="dc-ogol-run" class="primary">Load captured data &amp; fill form</button>
+      <button id="dc-ogol-copy-source" class="secondary" title="Source link for the participant's P record (fill it in after saving)">Copy source URL</button>
       <button id="dc-ogol-clear" class="secondary">Clear captured data</button>
       <hr>
       <label class="dc-ogol-label">South American nickname (overwrites Names, Short Name, Nickname)</label>
       <input type="text" id="dc-ogol-nickname" placeholder="e.g. Railson">
       <button id="dc-ogol-apply-nickname" class="secondary">Apply nickname</button>
+      <hr>
+      <div id="dc-ogol-asian-hint"></div>
+      <button id="dc-ogol-asian-shortname" class="secondary" title="Asian names: copy the generated Full Name into Short Name (avoids many identical short names like 'Lee K.')">Copy Full Name → Short Name</button>
       <div id="dc-ogol-log"></div>
     `;
     document.body.appendChild(panel);
@@ -1433,9 +2318,26 @@
     function refreshStatus() {
       const raw = GM_getValue(STORAGE_KEY, null);
       const statusEl = document.getElementById('dc-ogol-status');
-      if (!raw) return;
+      if (!raw) {
+        const w = document.getElementById('dc-ogol-date-warning');
+        if (w) w.style.display = 'none';
+        return;
+      }
       const data = JSON.parse(raw);
       const typeLabel = data.participantType === 'Coach' ? 'Coach' : 'Player';
+      const asianHint = document.getElementById('dc-ogol-asian-hint');
+      if (asianHint) {
+        const asian = finalizeNames(data).isAsian;
+        asianHint.textContent = asian
+          ? `${toDcCountry(data.country)} player — if the name is Asian (e.g. "Chun-Lok Tan", not "Raphaël Merkies"), copy Full Name to Short Name with the button below.`
+          : '';
+        asianHint.style.display = asian ? 'block' : 'none';
+      }
+      const dateWarn = document.getElementById('dc-ogol-date-warning');
+      if (dateWarn) {
+        dateWarn.textContent = isJan1(data) ? jan1Message(data) : '';
+        dateWarn.style.display = isJan1(data) ? 'block' : 'none';
+      }
       statusEl.textContent = `Captured (${typeLabel}): ${data.surname || ''} ${data.firstName || ''} — ${data.sourceUrl} (${data.capturedAt})`;
 
       // Prefill the South American nickname from the source (oGol common
@@ -1488,6 +2390,33 @@
 
       log('Nickname applied.');
     }
+
+    // Source URL for "P" (filled in only after the participant is saved).
+    document.getElementById('dc-ogol-copy-source').addEventListener('click', async () => {
+      const btn = document.getElementById('dc-ogol-copy-source');
+      const raw = GM_getValue(STORAGE_KEY, null);
+      const url = raw ? JSON.parse(raw).sourceUrl : null;
+      if (!url) { log('No captured data — nothing to copy.'); return; }
+      try {
+        if (typeof GM_setClipboard === 'function') GM_setClipboard(url, 'text');
+        else await navigator.clipboard.writeText(url);
+        log(`Copied source URL: ${url}`);
+        btn.textContent = 'Copied ✓';
+        setTimeout(() => { btn.textContent = 'Copy source URL'; }, 2000);
+      } catch (e) {
+        log(`Copy failed — copy it manually: ${url}`);
+      }
+    });
+
+    document.getElementById('dc-ogol-asian-shortname').addEventListener('click', () => {
+      const props = document.querySelector('[data-test-id="jonas-field-participant-propertyData"]');
+      const fullInput = props?.querySelector('input[id$="_p_1_name_data_name_0"]');
+      const shortInput = props?.querySelector('input[id$="_p_19_name_data_name_0"]');
+      if (!fullInput || !shortInput) { log('Full Name / Short Name input not found.'); return; }
+      if (!fullInput.value.trim()) { log('Full Name is empty — fill the names first.'); return; }
+      setNativeValue(shortInput, fullInput.value.trim());
+      log(`Short Name = Full Name (${fullInput.value.trim()})`);
+    });
 
     document.getElementById('dc-ogol-apply-nickname').addEventListener('click', () => {
       document.getElementById('dc-ogol-log').textContent = '';
