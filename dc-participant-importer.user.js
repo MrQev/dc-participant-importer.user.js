@@ -1,16 +1,18 @@
 // ==UserScript==
 // @name         DC Participant Importer
 // @namespace    dc-ogol-fill
-// @version      1.8.1
+// @version      1.9.0
 // @author       DKode
 // @homepageURL  https://github.com/MrQev/dc-participant-importer.user.js
 // @supportURL   https://github.com/MrQev/dc-participant-importer.user.js/issues
 // @updateURL    https://raw.githubusercontent.com/MrQev/dc-participant-importer.user.js/main/dc-participant-importer.user.js
 // @downloadURL  https://raw.githubusercontent.com/MrQev/dc-participant-importer.user.js/main/dc-participant-importer.user.js
-// @description  Creates DC participants from Transfermarkt, oGol, worldfootball.net, Soccerdonna, BeSoccer, UEFA.com, Sofascore, Opta (internal), EliteProspects and Baseball-Reference, checks duplicates in DC and adds Google search to data-checking.
+// @description  Creates DC participants from Transfermarkt, oGol, zerozero, worldfootball.net, Soccerdonna, BeSoccer, UEFA.com, Sofascore, Opta (internal), EliteProspects and Baseball-Reference, checks duplicates in DC and adds Google search to data-checking.
 // @match        https://dc.livesport.eu/jsx/data/participant/detail/new*
 // @match        https://dc.livesport.eu/data/data-checking/participant-incident*
 // @match        https://www.ogol.com.br/jogador/*
+// @match        https://www.zerozero.pt/jogador/*
+// @match        https://zerozero.pt/jogador/*
 // @match        https://www.eliteprospects.com/player/*
 // @match        https://www.worldfootball.net/person/*
 // @match        https://www.worldfootball.net/player_summary/*
@@ -627,13 +629,18 @@
   // =======================================================================
   // PART 1: runs on the oGol player page — parses the live DOM and stores it
   // =======================================================================
-  if (location.hostname.includes('ogol.com.br')) {
+  // oGol (Brazil) and zerozero (Portugal) are the same site network with
+  // identical player pages (Portuguese labels), so they share this part.
+  if (location.hostname.includes('ogol.com.br') || location.hostname.includes('zerozero.pt')) {
+    const siteName = location.hostname.includes('zerozero.pt') ? 'zerozero' : 'oGol';
     // Labels vary ("Nacionalidade" vs "Nacionalidade / Dupla Nacionalidade"),
     // so an exact match wins, otherwise the first label starting with it.
     function getRow(label) {
       const rows = Array.from(document.querySelectorAll('.card-data__row'));
-      const labelOf = (r) => (r.querySelector('.card-data__label')?.textContent || '').trim();
-      const row = rows.find((r) => labelOf(r) === label) || rows.find((r) => labelOf(r).startsWith(label));
+      // Case-insensitive: European Portuguese pages may write "Data de nascimento".
+      const labelOf = (r) => (r.querySelector('.card-data__label')?.textContent || '').trim().toLowerCase();
+      const want = label.toLowerCase();
+      const row = rows.find((r) => labelOf(r) === want) || rows.find((r) => labelOf(r).startsWith(want));
       return row ? row.querySelector('.card-data__value')?.textContent.trim() : null;
     }
 
@@ -688,8 +695,14 @@
       const norm = (x) => (x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
       const nickname = commonName && fullName && norm(commonName) !== norm(fullName) ? commonName : null;
 
+      // Women's football: the header info says "Futebol Feminino" (or similar).
+      const headerText = document.querySelector('.zz-enthdr-info')?.textContent || headerInfo;
+      const gender = /feminin/i.test(headerText) ? 'Women' : null;
+      if (gender) console.log('[dc-ogol-fill] women\'s football detected — gender = Women');
+
       return {
         participantType: 'Player',
+        gender,
         surname,
         firstName,
         nickname,
@@ -704,7 +717,7 @@
       };
     }
 
-    const ogolPanel = makeSourcePanel('Capture player data for DC (oGol)', parseOgolLive);
+    const ogolPanel = makeSourcePanel(`Capture player data for DC (${siteName})`, parseOgolLive);
     {
       const commonName = ogolCommonName();
       const tokens = nameTokens(getRow('Nome'), commonName);
