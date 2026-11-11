@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DC Participant Importer
 // @namespace    dc-ogol-fill
-// @version      1.9.0
+// @version      1.9.1
 // @author       DKode
 // @homepageURL  https://github.com/MrQev/dc-participant-importer.user.js
 // @supportURL   https://github.com/MrQev/dc-participant-importer.user.js/issues
@@ -231,6 +231,8 @@
     'côte d’ivoire': 'Ivory Coast',
     "côte d'ivoire": 'Ivory Coast',
     'congo - kinshasa': 'DR Congo',
+    'republic of ireland': 'Ireland',
+    'ireland, republic of': 'Ireland',
     'hongkong': 'Hong Kong',
     'hong kong sar china': 'Hong Kong',
     'hong kong, china': 'Hong Kong',
