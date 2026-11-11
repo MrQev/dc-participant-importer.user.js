@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DC Participant Importer
 // @namespace    dc-ogol-fill
-// @version      1.9.1
+// @version      1.9.3
 // @author       DKode
 // @homepageURL  https://github.com/MrQev/dc-participant-importer.user.js
 // @supportURL   https://github.com/MrQev/dc-participant-importer.user.js/issues
@@ -108,7 +108,11 @@
   // whose name is _like "FirstName Surname". Diacritics are stripped because
   // participants are stored in DC without them.
   function buildDuplicateSearchUrl(data) {
-    const name = [data.firstName, data.surname].filter(Boolean).join(' ')
+    // Same character rules as the DC form fill (ß -> ss, Þ -> Th, ð -> d,
+    // no Arabic hyphens), then without diacritics like DC stores names.
+    const isArab = ARAB_COUNTRIES.includes(toDcCountry(data.country || ''));
+    const prep = (x) => removeArabHyphens(normalizeNameChars(x), isArab);
+    const name = [prep(data.firstName), prep(data.surname)].filter(Boolean).join(' ')
       .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
     const state = {
       activeRowIds: [],
@@ -1309,7 +1313,14 @@
       await waitFor(() => document.querySelector('.player-profile-category') || micro('birthdate'), 8000, 150);
       const { tokens } = uefaPrepareName();
       const dob = uefaDob();
-      const positionText = uefaProfile('Position') || '';
+      // Some players have two: "Club position" and "National team position" —
+      // DC gets the club one. Single "Position" for everyone else.
+      let fieldPosition = null;
+      try {
+        fieldPosition = JSON.parse(document.querySelector('[data-name="related-players"]')?.getAttribute('data-options') || '{}').fieldPosition || null;
+      } catch (e) { /* ignore */ }
+      const positionText = uefaProfile('Club position') || uefaProfile('Position')
+        || uefaProfile('National team position') || fieldPosition || '';
       const position = mapPositionAny(positionText);
       if (positionText && !position) console.log(`[dc-ogol-fill] unrecognized position "${positionText}"`);
       const h = parseInt(micro('height'), 10); // "0" = not known
