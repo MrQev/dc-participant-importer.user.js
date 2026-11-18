@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DC Participant Importer
 // @namespace    dc-ogol-fill
-// @version      1.9.3
+// @version      1.9.4
 // @author       DKode
 // @homepageURL  https://github.com/MrQev/dc-participant-importer.user.js
 // @supportURL   https://github.com/MrQev/dc-participant-importer.user.js/issues
@@ -1567,8 +1567,9 @@
         country: h.country,
         heightCm: height,
         position,
-        // keep the player id, drop the match id
-        sourceUrl: `${location.origin}${location.pathname}?optaPlayerId=${new URLSearchParams(location.search).get('optaPlayerId') || ''}`,
+        // Always the opta.lsoffice.cz form (also from opta-data.lsoffice.cz);
+        // keep the player id, drop the match id.
+        sourceUrl: `https://opta.lsoffice.cz${location.pathname}?optaPlayerId=${new URLSearchParams(location.search).get('optaPlayerId') || ''}`,
         capturedAt: new Date().toISOString(),
       };
     }
