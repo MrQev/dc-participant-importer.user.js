@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DC Participant Importer
 // @namespace    dc-ogol-fill
-// @version      1.9.4
+// @version      1.14.2
 // @author       DKode
 // @homepageURL  https://github.com/MrQev/dc-participant-importer.user.js
 // @supportURL   https://github.com/MrQev/dc-participant-importer.user.js/issues
@@ -13,17 +13,23 @@
 // @match        https://www.ogol.com.br/jogador/*
 // @match        https://www.zerozero.pt/jogador/*
 // @match        https://zerozero.pt/jogador/*
+// @match        https://www.ogol.com.br/arbitro/*
+// @match        https://www.zerozero.pt/arbitro/*
+// @match        https://zerozero.pt/arbitro/*
 // @match        https://www.eliteprospects.com/player/*
 // @match        https://www.worldfootball.net/person/*
 // @match        https://www.worldfootball.net/player_summary/*
 // @match        https://www.uefa.com/*/players/*
 // @match        https://en.uefa.com/*/players/*
 // @match        https://www.sofascore.com/*player/*
+// @match        https://www.sofascore.com/*referee/*
 // @match        https://opta.lsoffice.cz/opta/opta-player-detail.php*
 // @match        https://opta-data.lsoffice.cz/opta/opta-player-detail.php*
 // @match        https://www.baseball-reference.com/players/*
 // @match        https://www.soccerdonna.de/*/profil/spieler_*
+// @match        https://www.soccerdonna.de/*/profil/schiedsrichter_*
 // @match        https://www.besoccer.com/player/*
+// @match        https://www.besoccer.com/referee/*
 // @match        https://www.transfermarkt.com/*/profil/spieler/*
 // @match        https://www.transfermarkt.de/*/profil/spieler/*
 // @match        https://www.transfermarkt.at/*/profil/spieler/*
@@ -76,6 +82,32 @@
 // @match        https://www.transfermarkt.com.ar/*/profil/trainer/*
 // @match        https://www.transfermarkt.mx/*/profil/trainer/*
 // @match        https://www.transfermarkt.co/*/profil/trainer/*
+// @match        https://www.transfermarkt.com/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.de/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.at/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.ch/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.co.uk/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.us/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.world/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.es/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.it/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.fr/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.pt/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.com.br/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.com.tr/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.nl/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.be/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.pl/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.gr/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.ro/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.jp/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.co.kr/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.co.id/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.co.in/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.my/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.com.ar/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.mx/*/profil/schiedsrichter/*
+// @match        https://www.transfermarkt.co/*/profil/schiedsrichter/*
 // @connect      www.transfermarkt.com
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -500,6 +532,15 @@
       // multi-word heads count only with opts.allowMultiHead.
       else if (head === common.join(' ') && (common.length === 1 || opts.allowMultiHead)) split = common.length;
     }
+    // Multi-word common name that is "first + surname" ("Fábio Veríssimo" of
+    // "Fábio José Costa Veríssimo", "Gabriel Jesus" of "Gabriel Fernando de
+    // Jesus"): split right before its surname part.
+    if (split === 1 && common.length >= 2 && common[0] === full[0]) {
+      const surPart = common.slice(1);
+      for (let i = 1; i <= full.length - surPart.length; i++) {
+        if (surPart.every((t, k) => full[i + k] === t)) { split = i; break; }
+      }
+    }
     while (split > 1 && isParticle(tokens[split - 1])) split--;
     return split;
   }
@@ -639,6 +680,8 @@
   // identical player pages (Portuguese labels), so they share this part.
   if (location.hostname.includes('ogol.com.br') || location.hostname.includes('zerozero.pt')) {
     const siteName = location.hostname.includes('zerozero.pt') ? 'zerozero' : 'oGol';
+    // Referee profiles: /arbitro/<slug>/<id> — name, birthday, nationality only.
+    const isReferee = location.pathname.startsWith('/arbitro/');
     // Labels vary ("Nacionalidade" vs "Nacionalidade / Dupla Nacionalidade"),
     // so an exact match wins, otherwise the first label starting with it.
     function getRow(label) {
@@ -652,8 +695,8 @@
 
     // Common name from the h1, without a shirt number prefix ("9.Yuri Alberto").
     function ogolCommonName() {
-      const nameEl = document.querySelector('h1 .name');
-      if (!nameEl) return null;
+      const nameEl = document.querySelector('h1 .name') || document.querySelector('h1');
+      if (!nameEl) return (document.title.split(/\s[|–-]\s/)[0] || '').trim() || null;
       const text = Array.from(nameEl.childNodes)
         .filter((n) => n.nodeType === Node.TEXT_NODE)
         .map((n) => n.textContent.trim()).join(' ').trim() || nameEl.textContent.trim();
@@ -703,27 +746,28 @@
 
       // Women's football: the header info says "Futebol Feminino" (or similar).
       const headerText = document.querySelector('.zz-enthdr-info')?.textContent || headerInfo;
-      const gender = /feminin/i.test(headerText) ? 'Women' : null;
+      const profession = getRow('Profissão') || '';
+      const gender = (/feminin/i.test(headerText) || /árbitra/i.test(profession)) ? 'Women' : null;
       if (gender) console.log('[dc-ogol-fill] women\'s football detected — gender = Women');
 
       return {
-        participantType: 'Player',
+        participantType: isReferee ? 'Referee' : 'Player',
         gender,
         surname,
         firstName,
-        nickname,
+        nickname: isReferee ? null : nickname,
         birthYear: dobMatch ? dobMatch[1] : null,
         birthMonth: dobMatch ? dobMatch[2] : null,
         birthDay: dobMatch ? dobMatch[3] : null,
         country: nationality ? (COUNTRY_MAP[nationality] || nationality) : null,
-        heightCm: heightMatch ? heightMatch[1] : null,
-        position: mapPosition(positionText),
+        heightCm: isReferee ? null : (heightMatch ? heightMatch[1] : null),
+        position: isReferee ? null : mapPosition(positionText),
         sourceUrl: location.origin + location.pathname, // drop tracking query (?adobe_mc=…) and hash
         capturedAt: new Date().toISOString(),
       };
     }
 
-    const ogolPanel = makeSourcePanel(`Capture player data for DC (${siteName})`, parseOgolLive);
+    const ogolPanel = makeSourcePanel(`Capture ${isReferee ? 'referee' : 'player'} data for DC (${siteName})`, parseOgolLive);
     {
       const commonName = ogolCommonName();
       const tokens = nameTokens(getRow('Nome'), commonName);
@@ -746,6 +790,10 @@
   //     keyword map.
   if (/(^|\.)transfermarkt\.[a-z.]+$/.test(location.hostname)) {
     const isCoachPage = location.pathname.includes('/profil/trainer/');
+    // Referees ("schiedsrichter"): only name, birthday, country (+ sport, type, gender).
+    const isRefereePage = location.pathname.includes('/profil/schiedsrichter/');
+    const noPosition = isCoachPage || isRefereePage;
+    const tmType = isRefereePage ? 'Referee' : (isCoachPage ? 'Coach' : 'Player');
     const TM_ENGLISH_HOSTS = ['www.transfermarkt.com', 'www.transfermarkt.co.uk', 'www.transfermarkt.us', 'www.transfermarkt.world'];
     const isEnglishHost = TM_ENGLISH_HOSTS.includes(location.hostname);
     const FLAG_CACHE_KEY = 'dcTmFlagNames'; // { "<flagId>": "English country name" }
@@ -798,7 +846,27 @@
       }
       // 3) Visible text in whatever local format.
       const el = doc.querySelector('[itemprop="birthDate"]');
-      return el ? parseDateText(el.textContent, host) : null;
+      const fromItemprop = el ? parseDateText(el.textContent, host) : null;
+      if (fromItemprop) return fromItemprop;
+      // 4) By label (e.g. referee pages without itemprop): header items,
+      //    .info-table rows, table.auflistung rows.
+      const DOB_LABELS = ['date of birth', 'born', 'geb.', 'geburtsdatum', 'fecha de nacimiento', 'f. nacim',
+        'data di nascita', 'date de naissance', 'data de nascimento', 'doğum tarihi', 'data urodzenia',
+        'geboortedatum', 'ημερομηνία γέννησης', 'data nașterii', 'tanggal lahir'];
+      const isDobLabel = (t) => DOB_LABELS.some((l) => clean(t).toLowerCase().startsWith(l));
+      const candidates = [
+        ...Array.from(doc.querySelectorAll('.data-header__items .data-header__label'))
+          .filter((li) => isDobLabel(li.textContent)).map((li) => li.querySelector('.data-header__content')?.textContent || li.textContent),
+        ...Array.from(doc.querySelectorAll('.info-table__content--regular'))
+          .filter((sp) => isDobLabel(sp.textContent)).map((sp) => sp.nextElementSibling?.textContent),
+        ...Array.from(doc.querySelectorAll('table.auflistung th, table.auflistung td:first-child'))
+          .filter((th) => isDobLabel(th.textContent)).map((th) => th.nextElementSibling?.textContent),
+      ];
+      for (const text of candidates) {
+        const d = text && parseDateText(text, host);
+        if (d) return d;
+      }
+      return null;
     }
 
     // ---- citizenship (flag) --------------------------------------------
@@ -916,7 +984,7 @@
         dob: extractDob(doc, host),
         flags: extractFlags(doc),
         heightCm: extractHeight(doc),
-        positionText: isCoachPage ? null : extractPositionText(doc),
+        positionText: noPosition ? null : extractPositionText(doc),
       };
     }
 
@@ -981,20 +1049,20 @@
       }
 
       const positionText = pick('positionText');
-      const position = isCoachPage ? null : mapPositionAny(positionText);
-      if (!isCoachPage && positionText && !position) {
+      const position = noPosition ? null : mapPositionAny(positionText);
+      if (!noPosition && positionText && !position) {
         console.log(`[dc-ogol-fill] unrecognized position "${positionText}" — extend POSITION_KEYWORDS.`);
       }
 
       return {
-        participantType: isCoachPage ? 'Coach' : 'Player',
+        participantType: tmType,
         surname: pick('surname'),
         firstName: pick('firstName'),
         birthYear: dob ? dob.y : null,
         birthMonth: dob ? dob.m : null,
         birthDay: dob ? dob.d : null,
         country,
-        heightCm: pick('heightCm'), // usually null on coach pages, fillForm skips if absent
+        heightCm: isRefereePage ? null : pick('heightCm'), // usually null on coach pages, fillForm skips if absent
         position,
         sourceUrl: location.origin + location.pathname, // drop tracking query (?adobe_mc=…) and hash
         enrichedFromEnglish: !isEnglishHost && !!en,
@@ -1003,7 +1071,7 @@
     }
 
     makeSourcePanel(
-      `Capture ${isCoachPage ? 'coach' : 'player'} data for DC (Transfermarkt)`,
+      `Capture ${tmType.toLowerCase()} data for DC (Transfermarkt)`,
       parseTransfermarkt,
     );
   }
@@ -1173,6 +1241,19 @@
       return asCoach && !asPlayer;
     }
 
+    // Referee: the person menu has "Matches as referee" (/matches-as-referee/).
+    // It wins over "Career as a player": people become referees after
+    // playing, not the other way round.
+    function wfIsReferee() {
+      return Array.from(document.querySelectorAll('.hs-menu-level-person a, nav a'))
+        .some((a) => /\/matches-as-referee\//.test(a.getAttribute('href') || '') || /as referee/i.test(a.textContent));
+    }
+
+    function wfType() {
+      if (wfIsReferee()) return 'Referee';
+      return wfIsCoach() ? 'Coach' : 'Player';
+    }
+
     // Career rows carry data-gender="male"/"female".
     function wfGender() {
       const g = document.querySelector('.hs-career tbody tr[data-gender]')?.getAttribute('data-gender');
@@ -1214,7 +1295,8 @@
 
     function parseWorldfootball() {
       const { tokens } = wfPrepareName();
-      const isCoach = wfIsCoach();
+      const type = wfType();
+      const isCoach = type !== 'Player'; // coaches and referees: no position
       const dob = parseWfDate(txt('.hs-profile dd.person-birthday') || txt('dd.person-birthday'));
 
       const heightText = txt('.hs-profile dd.person-height') || txt('dd.person-height');
@@ -1231,7 +1313,7 @@
       }
 
       return {
-        participantType: isCoach ? 'Coach' : 'Player',
+        participantType: type,
         gender: wfGender(),
         surname: tokens.slice(NAME.split).join(' ') || null,
         firstName: tokens.slice(0, NAME.split).join(' ') || null,
@@ -1239,7 +1321,7 @@
         birthMonth: dob ? dob.m : null,
         birthDay: dob ? dob.d : null,
         country: wfCountry(),
-        heightCm,
+        heightCm: type === 'Referee' ? null : heightCm,
         position,
         sourceUrl: location.origin + location.pathname,
         capturedAt: new Date().toISOString(),
@@ -1247,7 +1329,7 @@
     }
 
     const wfPanel = makeSourcePanel(
-      `Capture ${wfIsCoach() ? 'coach' : 'player'} data for DC (worldfootball)`,
+      `Capture ${wfType().toLowerCase()} data for DC (worldfootball)`,
       parseWorldfootball,
     );
     mountNameSplitWidget(wfPanel, wfPrepareName().tokens);
@@ -1357,21 +1439,24 @@
   // header (flag img + country, "17 January 2001 (25)", "Midfielder", "177 cm").
   // Sofascore is a Next.js SPA: after navigating to another player inside
   // the site, reload the page (F5) so the panel picks up the new player.
-  if (location.hostname === 'www.sofascore.com' && /\/player\/[^/]+\/\d+/.test(location.pathname)) {
+  // Referees too: /football/referee/rade-obrenovic/300916 (API /api/v1/referee/{id}).
+  if (location.hostname === 'www.sofascore.com' && /\/(player|referee)\/[^/]+\/\d+/.test(location.pathname)) {
+    const sofaKind = /\/referee\//.test(location.pathname) ? 'referee' : 'player';
+    const isSofaReferee = sofaKind === 'referee';
     const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
     const pad2 = (n) => String(n).padStart(2, '0');
     const EN_MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
-    const currentId = () => (location.pathname.match(/\/player\/[^/]+\/(\d+)/) || [])[1];
+    const currentId = () => (location.pathname.match(/\/(?:player|referee)\/[^/]+\/(\d+)/) || [])[1];
     const isHockeyUrl = () => /ice-hockey|hokej|eishockey/i.test(location.pathname);
 
     async function fetchSofaPlayer(id) {
       try {
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), 8000);
-        const res = await fetch(`/api/v1/player/${id}`, { credentials: 'include', signal: ctrl.signal });
+        const res = await fetch(`/api/v1/${sofaKind}/${id}`, { credentials: 'include', signal: ctrl.signal });
         clearTimeout(timer);
         if (!res.ok) { console.log('[dc-ogol-fill] Sofascore API status', res.status); return null; }
-        return (await res.json()).player || null;
+        return (await res.json())[sofaKind] || null;
       } catch (e) {
         console.log('[dc-ogol-fill] Sofascore API error', e);
         return null;
@@ -1443,13 +1528,13 @@
       }
       const sportSlug = api?.team?.sport?.slug || (isHockeyUrl() ? 'ice-hockey' : 'football');
       const isHockey = sportSlug === 'ice-hockey';
-      const position = mapSofaPosition(api?.position) || mapPositionAny(dom.positionText);
-      const height = api?.height > 100 ? String(api.height) : dom.heightCm;
+      const position = isSofaReferee ? null : (mapSofaPosition(api?.position) || mapPositionAny(dom.positionText));
+      const height = isSofaReferee ? null : (api?.height > 100 ? String(api.height) : dom.heightCm);
       const gender = api?.gender === 'F' ? 'Women' : (api?.gender === 'M' ? 'Men' : null);
       if (!api) console.log('[dc-ogol-fill] Sofascore: API unavailable — using page data');
 
       return {
-        participantType: 'Player',
+        participantType: isSofaReferee ? 'Referee' : 'Player',
         sport: isHockey ? 'Hockey' : undefined,
         gender,
         surname: tokens.slice(NAME.split).join(' ') || null,
@@ -1465,7 +1550,7 @@
       };
     }
 
-    const sofaPanel = makeSourcePanel('Capture player data for DC (Sofascore)', parseSofascore);
+    const sofaPanel = makeSourcePanel(`Capture ${sofaKind} data for DC (Sofascore)`, parseSofascore);
     waitFor(() => document.querySelector('.card-component h2'), 8000, 150).then(async () => {
       const api = await getApi();
       mountNameSplitWidget(sofaPanel, sofaPrepareName(api).tokens);
@@ -1709,7 +1794,9 @@
   // Soccerdonna is Transfermarkt's women's site: flag image IDs are the same,
   // so the TM flag cache (ID -> English name) translates /de/ pages too.
   // Gender is always Women.
-  if (location.hostname.endsWith('soccerdonna.de') && /\/profil\/spieler_\d+/.test(location.pathname)) {
+  // Referees too: /profil/schiedsrichter_559.html (name, birthday, nationality only).
+  if (location.hostname.endsWith('soccerdonna.de') && /\/profil\/(spieler|schiedsrichter)_\d+/.test(location.pathname)) {
+    const isSdReferee = /\/profil\/schiedsrichter_\d+/.test(location.pathname);
     const clean = (s) => (s || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
     const pad2 = (n) => String(n).padStart(2, '0');
     const isEnglish = location.pathname.startsWith('/en/');
@@ -1743,8 +1830,14 @@
         return first && wanted.includes(clean(first.textContent).replace(/:$/, '').toLowerCase());
       });
       const cell = row?.querySelectorAll('td')[1];
+      // Players: <img src=".../flaggen/184.gif" title>; referees: <span class="flaggen_sprite sprite_land_40" title>.
       const img = cell?.querySelector('img[title]');
-      return { id: flagId(img), title: clean(img?.getAttribute('title')) || clean(cell?.textContent) || null };
+      const sprite = cell?.querySelector('[class*="sprite_land_"][title]');
+      const spriteId = sprite ? ((sprite.className.match(/sprite_land_(\d+)/) || [])[1] || null) : null;
+      return {
+        id: flagId(img) || spriteId,
+        title: clean(img?.getAttribute('title')) || clean(sprite?.getAttribute('title')) || clean(cell?.textContent) || null,
+      };
     }
 
     function learnFlag(id, englishTitle) {
@@ -1784,7 +1877,12 @@
     }
 
     function sdPrepareName() {
-      const display = clean(document.querySelector('h1')?.textContent).replace(/^\d+\s+/, ''); // "29 Olivia Wingate"
+      // Referee pages: "Schiedsrichterprofil von Anna-Lena Heidenreich" / photo title.
+      const refHeading = clean(document.querySelector('p.hl_unterseite')?.textContent)
+        .replace(/^.*?\b(von|of)\s+/i, '');
+      const display = isSdReferee
+        ? (refHeading || clean(document.querySelector('img.minifoto')?.getAttribute('title')))
+        : clean(document.querySelector('h1')?.textContent).replace(/^\d+\s+/, ''); // "29 Olivia Wingate"
       const full = sdRow(SD_LABELS.nativeName)?.text || display;
       const tokens = nameTokens(full, null);
       if (NAME.split === null) {
@@ -1808,11 +1906,11 @@
       const hm = (sdRow(SD_LABELS.height)?.text || '').match(/(\d)[,.](\d{2})/);
       // "Striker - Left Wing" -> main position "Striker"
       const positionText = sdRow(SD_LABELS.position)?.text || '';
-      const position = mapPositionAny(positionText.split(' - ')[0]) || mapPositionAny(positionText);
+      const position = isSdReferee ? null : (mapPositionAny(positionText.split(' - ')[0]) || mapPositionAny(positionText));
       if (positionText && !position) console.log(`[dc-ogol-fill] unrecognized position "${positionText}"`);
 
       return {
-        participantType: 'Player',
+        participantType: isSdReferee ? 'Referee' : 'Player',
         gender: 'Women',
         surname: tokens.slice(NAME.split).join(' ') || null,
         firstName: tokens.slice(0, NAME.split).join(' ') || null,
@@ -1820,14 +1918,14 @@
         birthMonth: dm ? pad2(dm[2]) : null,
         birthDay: dm ? pad2(dm[1]) : null,
         country: await sdCountry(),
-        heightCm: hm ? String(Math.round(parseFloat(`${hm[1]}.${hm[2]}`) * 100)) : null,
+        heightCm: isSdReferee ? null : hm ? String(Math.round(parseFloat(`${hm[1]}.${hm[2]}`) * 100)) : null,
         position,
         sourceUrl: location.origin + location.pathname,
         capturedAt: new Date().toISOString(),
       };
     }
 
-    const sdPanel = makeSourcePanel('Capture player data for DC (Soccerdonna)', parseSoccerdonna);
+    const sdPanel = makeSourcePanel(`Capture ${isSdReferee ? 'referee' : 'player'} data for DC (Soccerdonna)`, parseSoccerdonna);
     mountNameSplitWidget(sdPanel, sdPrepareName().tokens);
   }
 
@@ -1936,6 +2034,65 @@
     waitFor(() => panel().querySelector('.panel-title'), 5000, 100).then(() => {
       mountNameSplitWidget(bsPanel, bsPrepareName().tokens);
     });
+  }
+
+  // =======================================================================
+  // PART 1j-b: BeSoccer referee pages (/referee/rade-obrenovic-35502)
+  // =======================================================================
+  // h2.title "Rade Obrenovic"; "Personal data" rows: "Date of birth"
+  // "28/08/1990 (36 years)", "Country of birth" -> link /country/SI (ISO code).
+  // No separate nationality on referee pages, so the country of birth is used.
+  if (location.hostname === 'www.besoccer.com' && /^\/referee\//.test(location.pathname)) {
+    const clean = (s) => (s || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+    const pad2 = (n) => String(n).padStart(2, '0');
+
+    function bsRefRow(label) {
+      const row = Array.from(document.querySelectorAll('.table-row')).find((r) =>
+        clean(r.firstElementChild?.textContent).toLowerCase() === label.toLowerCase());
+      return row ? row.lastElementChild : null;
+    }
+
+    function bsRefCountry() {
+      const cell = bsRefRow('Country of birth') || bsRefRow('Nationality');
+      if (!cell) return null;
+      const code = ((cell.querySelector('a[href*="/country/"]')?.getAttribute('href') || '').match(/\/country\/([A-Za-z]{2})\b/) || [])[1]
+        || (clean(cell.textContent).match(/^([A-Z]{2})$/) || [])[1];
+      if (code) {
+        try {
+          const name = new Intl.DisplayNames(['en'], { type: 'region' }).of(code.toUpperCase());
+          if (name && name !== code.toUpperCase()) return name;
+        } catch (e) { /* not an ISO code */ }
+      }
+      return clean(cell.textContent) || null;
+    }
+
+    function bsRefPrepareName() {
+      const name = clean(document.querySelector('.panel-stats h2.title, h2.title')?.textContent);
+      const tokens = nameTokens(name, null);
+      if (NAME.split === null) NAME.split = guessNameSplit(tokens, null);
+      return { tokens };
+    }
+
+    function parseBeSoccerReferee() {
+      const { tokens } = bsRefPrepareName();
+      const dm = clean(bsRefRow('Date of birth')?.textContent).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); // dd/mm/yyyy
+      return {
+        participantType: 'Referee',
+        surname: tokens.slice(NAME.split).join(' ') || null,
+        firstName: tokens.slice(0, NAME.split).join(' ') || null,
+        birthYear: dm ? dm[3] : null,
+        birthMonth: dm ? pad2(dm[2]) : null,
+        birthDay: dm ? pad2(dm[1]) : null,
+        country: bsRefCountry(),
+        heightCm: null,
+        position: null,
+        sourceUrl: location.origin + location.pathname,
+        capturedAt: new Date().toISOString(),
+      };
+    }
+
+    const bsRefPanel = makeSourcePanel('Capture referee data for DC (BeSoccer)', parseBeSoccerReferee);
+    mountNameSplitWidget(bsRefPanel, bsRefPrepareName().tokens);
   }
 
   // =======================================================================
@@ -2117,7 +2274,7 @@
     }
 
     async function fillForm(data) {
-      const mainType = data.participantType === 'Coach' ? 'Coach' : 'Player';
+      const mainType = ['Coach', 'Referee'].includes(data.participantType) ? data.participantType : 'Player';
 
       // Sources set data.sport ('Hockey' from EliteProspects); default is soccer.
       const SPORT_CANDIDATES = { Hockey: ['Hockey', 'Ice Hockey'], Baseball: ['Baseball'] };
@@ -2159,7 +2316,7 @@
       } else if (mainType === 'Player') {
         log('No recognizable position found — skipping.');
       } else {
-        log('Coach — skipping position row.');
+        log(`${mainType} — skipping position row.`);
       }
       await sleep(200);
 
@@ -2259,6 +2416,21 @@
         log('Properties block not found.');
       }
 
+      // Manual: women referees get "(W)" at the end of Names
+      // (e.g. "Baldino Angelina (W)"). Done last, after DC regenerated Names.
+      const finalGender = data.gender || CONFIG.defaultGender;
+      if (mainType === 'Referee' && finalGender === 'Women') {
+        await sleep(500);
+        const namesInput = document.querySelector('[data-test-id="jonas-field-participant-nameData"] input[id$="_name_0"]');
+        if (namesInput) {
+          const current = namesInput.value.trim();
+          if (current && !/\(W\)$/.test(current)) {
+            setNativeValue(namesInput, `${current} (W)`);
+            log(`Women referee — Names = ${current} (W)`);
+          }
+        } else log('Names input not found — add "(W)" to Names manually.');
+      }
+
       log('Done. Nothing was saved — review the form before clicking Save.');
     }
 
@@ -2351,7 +2523,7 @@
         return;
       }
       const data = JSON.parse(raw);
-      const typeLabel = data.participantType === 'Coach' ? 'Coach' : 'Player';
+      const typeLabel = ['Coach', 'Referee'].includes(data.participantType) ? data.participantType : 'Player';
       const asianHint = document.getElementById('dc-ogol-asian-hint');
       if (asianHint) {
         const asian = finalizeNames(data).isAsian;
